@@ -27,7 +27,7 @@ def get_model_binary(model):
 def export_to_csv(df):
     return df.to_csv(index=False).encode('utf-8')
 
-# Session State
+# --- Session State Initialization ---
 if 'model_models' not in st.session_state:
     st.session_state.model_models = {
         "Random Forest": RandomForestRegressor(),
@@ -36,8 +36,15 @@ if 'model_models' not in st.session_state:
         "Decision Tree": DecisionTreeRegressor()
     }
 
-# --- Sidebar ---
+# --- Sidebar & File Management ---
 uploaded_file = st.sidebar.file_uploader("📁 Upload Dataset (CSV/Parquet)", type=['csv', 'parquet'])
+
+# Reset logic to prevent column mismatch errors
+if 'last_file' not in st.session_state: st.session_state.last_file = None
+if uploaded_file != st.session_state.last_file:
+    st.session_state.last_file = uploaded_file
+    if 'preprocessor' in st.session_state: del st.session_state.preprocessor
+    if 'ready_to_download' in st.session_state: del st.session_state.ready_to_download
 
 if uploaded_file:
     df = pl.read_csv(uploaded_file) if 'csv' in uploaded_file.name else pl.read_parquet(uploaded_file)
@@ -49,20 +56,11 @@ if uploaded_file:
     # TAB 1: EDA
     with tabs[0]:
         st.subheader("Data Explorer")
-        st.dataframe(df_pd.head(50), width='stretch')
-        
+        st.dataframe(df_pd.head(50), width=1000)
         numeric_df = df_pd.select_dtypes(include=[np.number])
         if not numeric_df.empty:
             st.write("### Correlation Matrix")
-            fig_corr = px.imshow(numeric_df.corr(), text_auto=True, aspect="auto", color_continuous_scale='RdBu_r')
-            st.plotly_chart(fig_corr, width='stretch')
-            
-            st.write("### Interactive Pairplot")
-            cols = numeric_df.columns.tolist()
-            cols_to_plot = st.multiselect("Select columns:", cols, default=cols[:3] if len(cols) >= 3 else cols)
-            if len(cols_to_plot) > 1:
-                df_sample = df_pd[cols_to_plot].sample(n=min(len(df_pd), 500), random_state=42)
-                st.plotly_chart(px.scatter_matrix(df_sample), width='stretch')
+            st.plotly_chart(px.imshow(numeric_df.corr(), text_auto=True, color_continuous_scale='RdBu_r'), width=1000)
 
     # TAB 2: Pipeline
     with tabs[1]:
@@ -82,15 +80,11 @@ if uploaded_file:
         if st.button("Run Model Benchmark"):
             if 'preprocessor' in st.session_state:
                 with st.status("🚀 Running 3-fold cross-validation...", expanded=True) as status:
-                    st.write("Processing data...")
                     X, y = df_pd.drop(columns=[target_col]), df_pd[target_col]
                     X_proc = st.session_state.preprocessor.fit_transform(X)
-                    st.write("Training models...")
                     results = {name: cross_val_score(model, X_proc, y, cv=3).mean() for name, model in st.session_state.model_models.items()}
                     status.update(label="✅ Benchmarking complete!", state="complete", expanded=False)
-                
                 res_df = pd.DataFrame.from_dict(results, orient='index', columns=['R2 Score'])
-                st.write("### Model Performance Comparison")
                 st.bar_chart(res_df)
                 st.table(res_df.sort_values(by='R2 Score', ascending=False))
             else:
@@ -102,19 +96,15 @@ if uploaded_file:
         if st.button("Analyze Model"):
             if 'preprocessor' in st.session_state:
                 with st.status("🩺 Analyzing model performance...", expanded=True) as status:
-                    st.write("Splitting data...")
                     X, y = df_pd.drop(columns=[target_col]), df_pd[target_col]
                     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-                    st.write("Fitting pipeline...")
                     pipe = Pipeline([('pre', st.session_state.preprocessor), ('reg', st.session_state.model_models[model_choice])])
                     pipe.fit(X_train, y_train)
-                    st.write("Generating predictions...")
                     preds = pipe.predict(X_test)
                     status.update(label="✅ Analysis complete!", state="complete", expanded=False)
-                
                 c1, c2 = st.columns(2)
-                c1.plotly_chart(px.scatter(x=y_test, y=preds, title="Actual vs Predicted"), width='stretch')
-                c2.plotly_chart(px.scatter(x=preds, y=(y_test - preds), title="Residual Plot"), width='stretch')
+                c1.plotly_chart(px.scatter(x=y_test, y=preds, title="Actual vs Predicted"))
+                c2.plotly_chart(px.scatter(x=preds, y=(y_test - preds), title="Residual Plot"))
             else:
                 st.warning("⚠️ Please initialize the preprocessor in the 'Pipeline' tab first.")
 
@@ -126,10 +116,8 @@ if uploaded_file:
                 pipe = Pipeline([('pre', st.session_state.preprocessor), ('reg', st.session_state.model_models[best_model])])
                 pipe.fit(df_pd.drop(columns=[target_col]), df_pd[target_col])
                 st.session_state.ready_to_download = pipe
-            
             if 'ready_to_download' in st.session_state:
                 st.download_button("💾 Download Model (.pkl)", data=get_model_binary(st.session_state.ready_to_download), file_name="model.pkl")
-                st.download_button("📊 Export Data as CSV", data=export_to_csv(df_pd), file_name="data.csv")
         else:
             st.info("Initialize the preprocessor to enable exports.")
 else:
