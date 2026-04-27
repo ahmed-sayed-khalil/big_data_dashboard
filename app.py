@@ -24,9 +24,6 @@ def get_model_binary(model):
     joblib.dump(model, buf)
     return buf.getvalue()
 
-def export_to_csv(df):
-    return df.to_csv(index=False).encode('utf-8')
-
 # --- Session State Initialization ---
 if 'model_models' not in st.session_state:
     st.session_state.model_models = {
@@ -39,7 +36,7 @@ if 'model_models' not in st.session_state:
 # --- Sidebar & File Management ---
 uploaded_file = st.sidebar.file_uploader("📁 Upload Dataset (CSV/Parquet)", type=['csv', 'parquet'])
 
-# Reset logic to prevent column mismatch errors
+# Reset logic: Clear pipeline if a new file is uploaded
 if 'last_file' not in st.session_state: st.session_state.last_file = None
 if uploaded_file != st.session_state.last_file:
     st.session_state.last_file = uploaded_file
@@ -64,10 +61,13 @@ if uploaded_file:
 
     # TAB 2: Pipeline
     with tabs[1]:
-        if st.button("Initialize Preprocessor"):
+        # Using a unique key based on column names to force reset on new data
+        col_signature = str(df_pd.columns.tolist())
+        if st.button("Initialize/Reset Preprocessor", key=col_signature):
             X = df_pd.drop(columns=[target_col])
             num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
             cat_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
+            
             st.session_state.preprocessor = ColumnTransformer(transformers=[
                 ('num', Pipeline([('imputer', SimpleImputer(strategy='median')), ('scaler', StandardScaler())]), num_cols),
                 ('cat', Pipeline([('imputer', SimpleImputer(strategy='constant', fill_value='missing')), 
