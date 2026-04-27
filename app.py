@@ -16,17 +16,25 @@ import io
 
 # Page Configuration
 def get_clean_data(df, target):
-    # Drop rows where the TARGET is missing
-    df_clean = df.dropna(subset=[target])
-    # Convert target to numeric
+    # 1. Drop rows where target is missing
+    df_clean = df.dropna(subset=[target]).copy()
+    
+    # 2. Convert target to numeric
     df_clean.loc[:, target] = pd.to_numeric(df_clean[target], errors='coerce')
     df_clean = df_clean.dropna(subset=[target])
-    # Separate X and y
+    
+    # 3. Clean numeric columns (remove inf and NaN)
+    # This prevents the "Input contains NaN" error
+    numeric_cols = df_clean.select_dtypes(include=[np.number]).columns
+    df_clean = df_clean.replace([np.inf, -np.inf], np.nan)
+    df_clean = df_clean.dropna(subset=numeric_cols)
+    
+    # 4. RESET THE INDEX - This is the key to fixing the ColumnTransformer error
+    df_clean = df_clean.reset_index(drop=True)
+    
     X = df_clean.drop(columns=[target])
     y = df_clean[target]
-    # Final safety: Remove any rows that are not finite (NaN/inf)
-    mask = np.isfinite(X.select_dtypes(include=[np.number])).all(axis=1)
-    return X[mask], y[mask]
+    return X, y
     
 st.set_page_config(layout="wide", page_title="Advanced ML Studio", page_icon="🚀")
 st.title("🚀 Advanced Analytics & ML Studio")
