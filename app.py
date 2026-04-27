@@ -36,12 +36,12 @@ if 'model_models' not in st.session_state:
 # --- Sidebar & File Management ---
 uploaded_file = st.sidebar.file_uploader("📁 Upload Dataset (CSV/Parquet)", type=['csv', 'parquet'])
 
-# Reset logic: Clear pipeline if a new file is uploaded
+# Reset logic
 if 'last_file' not in st.session_state: st.session_state.last_file = None
 if uploaded_file != st.session_state.last_file:
     st.session_state.last_file = uploaded_file
-    if 'preprocessor' in st.session_state: del st.session_state.preprocessor
-    if 'ready_to_download' in st.session_state: del st.session_state.ready_to_download
+    for key in ['preprocessor', 'ready_to_download']:
+        if key in st.session_state: del st.session_state[key]
 
 if uploaded_file:
     df = pl.read_csv(uploaded_file) if 'csv' in uploaded_file.name else pl.read_parquet(uploaded_file)
@@ -50,75 +50,71 @@ if uploaded_file:
     
     tabs = st.tabs(["📊 Data Profiling", "🔧 Pipeline", "🏆 Benchmarking", "🩺 Diagnostics", "📥 Export"])
 
-    # TAB 1: EDA
+    # TAB 1: EDA (Always visible)
     with tabs[0]:
         st.subheader("Data Explorer")
         st.dataframe(df_pd.head(50), width=1000)
         numeric_df = df_pd.select_dtypes(include=[np.number])
         if not numeric_df.empty:
             st.write("### Correlation Matrix")
-            st.plotly_chart(px.imshow(numeric_df.corr(), text_auto=True, color_continuous_scale='RdBu_r'), width=1000)
+            st.plotly_chart(px.imshow(numeric_df.corr(), text_auto=True, color_continuous_scale='RdBu_r'))
 
     # TAB 2: Pipeline
     with tabs[1]:
-        # Using a unique key based on column names to force reset on new data
         col_signature = str(df_pd.columns.tolist())
         if st.button("Initialize/Reset Preprocessor", key=col_signature):
             X = df_pd.drop(columns=[target_col])
             num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
             cat_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
-            
             st.session_state.preprocessor = ColumnTransformer(transformers=[
                 ('num', Pipeline([('imputer', SimpleImputer(strategy='median')), ('scaler', StandardScaler())]), num_cols),
                 ('cat', Pipeline([('imputer', SimpleImputer(strategy='constant', fill_value='missing')), 
-                                  ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=True))]), cat_cols)
+                                  ('onehot', OneHotEncoder(handle_unknown='ignore'))]), cat_cols)
             ])
-            st.success("✅ Preprocessor initialized.")
+            st.success("✅ Preprocessor ready.")
+
+    # TAB 3 & 4: Data Cleaning Helper
+    def get_clean_data(df, target):
+        X = df.drop(columns=[target])
+        y = pd.to_numeric(df[target], errors='coerce')
+        mask = y.notna()
+        return X[mask], y[mask]
 
     # TAB 3: Benchmarking
     with tabs[2]:
         if st.button("Run Model Benchmark"):
             if 'preprocessor' in st.session_state:
-                with st.status("🚀 Running 3-fold cross-validation...", expanded=True) as status:
-                    X, y = df_pd.drop(columns=[target_col]), df_pd[target_col]
-                    X_proc = st.session_state.preprocessor.fit_transform(X)
-                    results = {name: cross_val_score(model, X_proc, y, cv=3).mean() for name, model in st.session_state.model_models.items()}
-                    status.update(label="✅ Benchmarking complete!", state="complete", expanded=False)
-                res_df = pd.DataFrame.from_dict(results, orient='index', columns=['R2 Score'])
-                st.bar_chart(res_df)
-                st.table(res_df.sort_values(by='R2 Score', ascending=False))
-            else:
-                st.warning("⚠️ Please initialize the preprocessor in the 'Pipeline' tab first.")
+                X, y = get_clean_data(df_pd, target_col)
+                X_proc = st.session_state.preprocessor.fit_transform(X)
+                results = {name: cross_val_score(model, X_proc, y, cv=3).mean() for name, model in st.session_state.model_models.items()}
+                st.bar_chart(pd.DataFrame.from_dict(results, orient='index', columns=['R2 Score']))
+            else: st.warning("Initialize preprocessor first!")
 
     # TAB 4: Diagnostics
     with tabs[3]:
         model_choice = st.selectbox("Select Model:", list(st.session_state.model_models.keys()))
         if st.button("Analyze Model"):
             if 'preprocessor' in st.session_state:
-                with st.status("🩺 Analyzing model performance...", expanded=True) as status:
-                    X, y = df_pd.drop(columns=[target_col]), df_pd[target_col]
-                    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-                    pipe = Pipeline([('pre', st.session_state.preprocessor), ('reg', st.session_state.model_models[model_choice])])
-                    pipe.fit(X_train, y_train)
-                    preds = pipe.predict(X_test)
-                    status.update(label="✅ Analysis complete!", state="complete", expanded=False)
+                X, y = get_clean_data(df_pd, target_col)
+                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+                pipe = Pipeline([('pre', st.session_state.preprocessor), ('reg', st.session_state.model_models[model_choice])])
+                pipe.fit(X_train, y_train)
+                preds = pipe.predict(X_test)
                 c1, c2 = st.columns(2)
-                c1.plotly_chart(px.scatter(x=y_test, y=preds, title="Actual vs Predicted"))
-                c2.plotly_chart(px.scatter(x=preds, y=(y_test - preds), title="Residual Plot"))
-            else:
-                st.warning("⚠️ Please initialize the preprocessor in the 'Pipeline' tab first.")
+                c1.plotly_chart(px.scatter(x=y_test, y=preds, labels={'x':'Actual', 'y':'Predicted'}))
+                c2.plotly_chart(px.scatter(x=preds, y=(y_test - preds), labels={'x':'Predicted', 'y':'Residuals'}))
+            else: st.warning("Initialize preprocessor first!")
 
     # TAB 5: Export
     with tabs[4]:
         if 'preprocessor' in st.session_state:
-            best_model = st.selectbox("Select model to save:", list(st.session_state.model_models.keys()))
+            best_model = st.selectbox("Select model:", list(st.session_state.model_models.keys()))
             if st.button("Prepare Model"):
+                X, y = get_clean_data(df_pd, target_col)
                 pipe = Pipeline([('pre', st.session_state.preprocessor), ('reg', st.session_state.model_models[best_model])])
-                pipe.fit(df_pd.drop(columns=[target_col]), df_pd[target_col])
+                pipe.fit(X, y)
                 st.session_state.ready_to_download = pipe
             if 'ready_to_download' in st.session_state:
                 st.download_button("💾 Download Model (.pkl)", data=get_model_binary(st.session_state.ready_to_download), file_name="model.pkl")
-        else:
-            st.info("Initialize the preprocessor to enable exports.")
 else:
     st.info("👆 Upload a file to begin.")
